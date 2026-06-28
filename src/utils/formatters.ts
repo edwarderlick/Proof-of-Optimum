@@ -12,7 +12,7 @@ export function formatNumber(n: number): string {
 }
 
 export function formatCountdown(seconds: number): string {
-  if (seconds <= 0) return '0H 00M 00S';
+  if (seconds <= 0) return 'Refreshing soon...';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);

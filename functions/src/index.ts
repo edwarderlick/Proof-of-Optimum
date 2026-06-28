@@ -423,6 +423,79 @@ async function runScan(handle: string) {
     await new Promise(r => setTimeout(r, 1000));
   }
 
+  // Broader fallback: search general optimum tweets and filter for this user.
+  // Catches posts where the user doesn't tag @get_optimum directly every time.
+  const GENERAL_QUERIES = [
+    `@get_optimum -is:retweet`,
+    `get_optimum -is:retweet`,
+  ];
+  for (const q of GENERAL_QUERIES) {
+    try {
+      const url =
+        `https://${RAPIDAPI_HOST}/search` +
+        `?query=${encodeURIComponent(q)}&count=100`;
+      const resp = await fetch(url, {
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST,
+        },
+      });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const tweets = parseTweetsFromResponse(data);
+      for (const t of tweets) {
+        if (t.user_id !== cleanHandle) continue;
+        const key = t.tweet_id || `${t.user_id}:${t.views}:${t.likes}`;
+        if (seenIds.has(key)) continue;
+        seenIds.add(key);
+        allTweets.push(t);
+        if (!userProfile) {
+          userProfile = {
+            display_name: t.display_name,
+            avatar_url: t.avatar_url,
+            verified: t.verified,
+            followers_count: t.followers_count,
+          };
+        }
+      }
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 800));
+  }
+
+  // Profile API fallback if still no profile data from tweets
+  if (!userProfile) {
+    try {
+      const profileResp = await fetch(
+        `https://${RAPIDAPI_HOST}/user/details?username=${cleanHandle}`,
+        {
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST,
+          },
+        }
+      );
+      if (profileResp.ok) {
+        const pd = await profileResp.json();
+        const legacy =
+          pd?.data?.user?.result?.legacy ||
+          pd?.user?.result?.legacy ||
+          pd?.user?.legacy ||
+          pd?.legacy ||
+          null;
+        if (legacy) {
+          userProfile = {
+            display_name: legacy.name || cleanHandle,
+            avatar_url: (legacy.profile_image_url_https || legacy.profile_image_url || '')
+              .replace('_normal.jpg', '_400x400.jpg')
+              .replace('_normal.png', '_400x400.png'),
+            verified: pd?.data?.user?.result?.is_blue_verified || false,
+            followers_count: legacy.followers_count || legacy.normal_followers_count || 0,
+          };
+        }
+      }
+    } catch (_) {}
+  }
+
   console.log(`Scan: ${allTweets.length} posts for @${cleanHandle}`);
 
   const existingDoc = await db.collection('indexed_users').doc(cleanHandle).get();
@@ -471,15 +544,30 @@ async function runRerank() {
   const docs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
   snap.forEach(doc => { docs.push(doc); });
 
+  let rankN = 1;
   for (let i = 0; i < docs.length; i += 499) {
     const batch = db.batch();
     for (let j = i; j < Math.min(i + 499, docs.length); j++) {
-      batch.update(docs[j].ref, {
-        rank_views: j + 1,
-        rank_likes: j + 1,
-        rank_posts: j + 1,
-        total_users: total,
-      });
+      const docData = docs[j].data();
+      const hasActivity = (docData.total_posts || 0) > 0 || (docData.total_views || 0) > 0;
+      if (hasActivity) {
+        batch.update(docs[j].ref, {
+          rank_views: rankN,
+          rank_likes: rankN,
+          rank_posts: rankN,
+          total_users: total,
+          badge: rankN === 1 ? 'gold' : rankN === 2 ? 'silver' : rankN === 3 ? 'bronze' : rankN <= 10 ? 'top10' : null,
+        });
+        rankN++;
+      } else {
+        batch.update(docs[j].ref, {
+          rank_views: null,
+          rank_likes: null,
+          rank_posts: null,
+          badge: null,
+          total_users: total,
+        });
+      }
     }
     await batch.commit();
   }

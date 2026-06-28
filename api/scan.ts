@@ -156,6 +156,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await new Promise(r => setTimeout(r, 1000));
     }
 
+    // Broader fallback: search general optimum tweets and filter for this user.
+    // Catches posts where the user doesn't tag @get_optimum directly every time.
+    const GENERAL_QUERIES = [
+      `@get_optimum -is:retweet`,
+      `get_optimum -is:retweet`,
+    ];
+    for (const q of GENERAL_QUERIES) {
+      try {
+        const url = RAPIDAPI_BASE + '/search?query=' + encodeURIComponent(q) + '&count=100';
+        const r = await fetch(url, { method: 'GET', headers: rapidApiHeaders });
+        if (!r.ok) continue;
+        const data: any = await r.json();
+        const pageTweets = parseTweetsFromResponse(data);
+        for (const t of pageTweets) {
+          if (t.user_id !== cleanHandle) continue;
+          const key = t.tweet_id || `${t.user_id}:${t.views}:${t.likes}`;
+          if (seenIds.has(key)) continue;
+          seenIds.add(key);
+          allTweets.push(t);
+        }
+      } catch (_) {}
+      await new Promise(r => setTimeout(r, 800));
+    }
+
     console.log(`Scan complete: ${allTweets.length} posts for @${cleanHandle}`);
 
     let totalViews = 0;
@@ -187,7 +211,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (profileRes.ok) {
           const profileData: any = await profileRes.json();
           const legacy = profileData?.data?.user?.result?.legacy ||
-            profileData?.user?.legacy || profileData?.legacy || profileData;
+            profileData?.user?.result?.legacy ||
+            profileData?.user?.legacy || profileData?.legacy || null;
           profileFromTweets = {
             display_name: legacy?.name || cleanHandle,
             avatar_url: (
@@ -245,15 +270,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           reRankBatch = adminDb.batch();
           reRankOpCount = 0;
         }
-        reRankBatch.update(rankDoc.ref, {
-          rank_views: rankN,
-          rank_likes: rankN,
-          rank_posts: rankN,
-          total_users_at_rank_time: totalUsers,
-          badge: rankN === 1 ? 'gold' : rankN === 2 ? 'silver' :
-                 rankN === 3 ? 'bronze' : rankN <= 10 ? 'top10' : null,
-        });
-        rankN++;
+        const docData = rankDoc.data();
+        const hasActivity = (docData.total_posts || 0) > 0 || (docData.total_views || 0) > 0;
+        if (hasActivity) {
+          reRankBatch.update(rankDoc.ref, {
+            rank_views: rankN,
+            rank_likes: rankN,
+            rank_posts: rankN,
+            total_users: totalUsers,
+            badge: rankN === 1 ? 'gold' : rankN === 2 ? 'silver' :
+                   rankN === 3 ? 'bronze' : rankN <= 10 ? 'top10' : null,
+          });
+          rankN++;
+        } else {
+          reRankBatch.update(rankDoc.ref, {
+            rank_views: null,
+            rank_likes: null,
+            rank_posts: null,
+            badge: null,
+            total_users: totalUsers,
+          });
+        }
         reRankOpCount++;
       });
       reRankBatches.push(reRankBatch);

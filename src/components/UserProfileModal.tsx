@@ -71,17 +71,20 @@ export default function UserProfileModal({ user, isOpen, onClose }: UserProfileM
   // Use fresh data from Firestore if available, fall back to the prop
   const u = modalUser || user;
 
-  // FIX 2: robust rank — never show #0
   const storedRank =
     typeof u.rank_views === 'number' && u.rank_views > 0 && u.rank_views !== 999
       ? u.rank_views
       : (u.rank && u.rank > 0 ? u.rank : null);
   const rankDisplay = storedRank ? `#${storedRank}` : 'UNRANKED';
   const totalIndexed = stats?.indexed_users || 0;
-  const topPercent =
-    storedRank && totalIndexed > 0
-      ? `Top ${((storedRank / totalIndexed) * 100).toFixed(1)}%`
-      : '—';
+  const rawPercent = storedRank && totalIndexed > 0
+    ? (storedRank / totalIndexed) * 100
+    : null;
+  // Clamp at 100% — rank can exceed total_users if data was indexed at different times
+  const topPercent = rawPercent !== null
+    ? `Top ${Math.min(rawPercent, 100).toFixed(1)}%`
+    : '—';
+  const hasData = (u.total_views || 0) > 0 || (u.total_posts || 0) > 0;
 
 
   const handleShareCard = async () => {
@@ -333,9 +336,11 @@ export default function UserProfileModal({ user, isOpen, onClose }: UserProfileM
               {u.display_name}
             </h2>
             <p className="text-neutral-400 font-mono text-xs">@{u.x_handle}</p>
-            <p className="text-neutral-500 font-mono text-[10px] mt-2 font-bold">
-              {u.followers_count > 0 ? formatNumber(u.followers_count) + ' followers' : 'followers data loading...'}
-            </p>
+            {(u.followers_count || 0) > 0 && (
+              <p className="text-neutral-500 font-mono text-[10px] mt-2 font-bold">
+                {formatNumber(u.followers_count)} followers
+              </p>
+            )}
           </div>
 
           {/* Action buttons */}
@@ -380,54 +385,67 @@ export default function UserProfileModal({ user, isOpen, onClose }: UserProfileM
         {/* RIGHT COLUMN */}
         <div className="flex-grow p-5 md:p-10 flex flex-col justify-center">
 
-          <div className="mb-6">
-            <span className="font-mono text-[9px] uppercase tracking-widest bg-[#c9a84c]/10 text-[#c9a84c] px-2.5 py-1 rounded-full font-extrabold">
-              Rank {rankDisplay} · {topPercent}
-            </span>
-          </div>
-
-          {/* Stats Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
-            <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
-              <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Total Views</p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xl font-extrabold text-[#c9a84c] font-sans">
-                  {formatNumber(u.total_views)}
+          {hasData ? (
+            <>
+              <div className="mb-6">
+                <span className="font-mono text-[9px] uppercase tracking-widest bg-[#c9a84c]/10 text-[#c9a84c] px-2.5 py-1 rounded-full font-extrabold">
+                  Rank {rankDisplay} · {topPercent}
                 </span>
               </div>
-            </div>
 
-            <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
-              <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Total Likes</p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xl font-extrabold text-black font-sans">
-                  {formatNumber(u.total_likes)}
-                </span>
+              {/* Stats Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+                <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
+                  <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Total Views</p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xl font-extrabold text-[#c9a84c] font-sans">
+                      {formatNumber(u.total_views)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
+                  <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Total Likes</p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xl font-extrabold text-black font-sans">
+                      {formatNumber(u.total_likes)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
+                  <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Total Posts</p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xl font-extrabold text-neutral-700 font-sans">
+                      {formatNumber(u.total_posts)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
+                  <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Optimum Rank</p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xl font-extrabold text-black font-sans">{rankDisplay}</span>
+                    <span className="text-[9px] text-[#c9a84c] font-mono font-bold">{topPercent}</span>
+                  </div>
+                </div>
               </div>
-            </div>
 
-            <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
-              <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Total Posts</p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xl font-extrabold text-neutral-700 font-sans">
-                  {formatNumber(u.total_posts)}
-                </span>
+              {/* Activity chart */}
+              <div className="border-t border-neutral-100 pt-6">
+                <ActivityChart user={u} />
               </div>
+            </>
+          ) : (
+            <div className="text-center py-8">
+              <p className="text-neutral-400 text-sm mb-2">
+                No Optimum-related posts found for @{u.x_handle} yet.
+              </p>
+              <p className="text-neutral-300 text-xs">
+                Post about <span className="font-bold text-neutral-400">@get_optimum</span> to appear on the leaderboard!
+              </p>
             </div>
-
-            <div className="p-4 rounded-[16px] bg-neutral-50 border border-neutral-200/60">
-              <p className="font-mono text-[9px] text-neutral-400 uppercase tracking-widest mb-1 font-bold">Optimum Rank</p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xl font-extrabold text-black font-sans">{rankDisplay}</span>
-                <span className="text-[9px] text-[#c9a84c] font-mono font-bold">{topPercent}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* CSS bar chart */}
-          <div className="border-t border-neutral-100 pt-6">
-            <ActivityChart user={u} />
-          </div>
+          )}
         </div>
       </div>
     </div>

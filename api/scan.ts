@@ -3,23 +3,25 @@ import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
 import { VercelRequest, VercelResponse } from '@vercel/node';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import * as admin from 'firebase-admin';
 
-if (getApps().length === 0 && process.env.FIREBASE_PROJECT_ID) {
+if (!admin.apps.length && process.env.FIREBASE_PROJECT_ID) {
   try {
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
-    initializeApp({
-      credential: cert({
+    admin.initializeApp({
+      credential: admin.credential.cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: privateKey,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
       }),
     });
   } catch (error) {
     console.error('Firebase Admin init error:', error);
   }
 }
+
+const db = admin.apps.length ? admin.firestore() : null;
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
 
 function parseTweetsFromResponse(data: any): any[] {
   const tweets: any[] = [];
@@ -51,6 +53,7 @@ function parseTweetsFromResponse(data: any): any[] {
       tweets.push({
         tweet_id: tweetResult.rest_id || tweet.id_str || '',
         user_id: sn,
+        screen_name: userLegacy.screen_name,
         display_name: userLegacy.name || userLegacy.screen_name || '',
         avatar_url: avatarUrl || `https://unavatar.io/twitter/${sn}`,
         verified: user?.is_blue_verified || false,
@@ -86,19 +89,23 @@ function findNextCursor(data: any): string | null {
   return null;
 }
 
+// ── HANDLER ───────────────────────────────────────────────────────────────────
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   const { handle } = req.body;
-  if (!handle) {
-    return res.status(400).json({ error: 'Handle is required' });
-  }
+  if (!handle) return res.status(400).json({ error: 'No handle' });
 
-  const cleanHandle = handle.replace(/^@/, '').toLowerCase().trim();
+  const cleanHandle = handle.replace('@', '').toLowerCase().trim();
+  console.log('Scanning for:', cleanHandle);
 
-  if (!process.env.RAPIDAPI_KEY) {
+  const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY!;
+  const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST!;
+
+  if (!RAPIDAPI_KEY || !db) {
     return res.status(200).json({
       success: true,
       simulated: true,
@@ -110,214 +117,242 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         total_views: 120000,
         total_likes: 3500,
         total_posts: 12,
-        last_indexed_at: new Date(),
       },
     });
   }
 
-  const RAPIDAPI_BASE = `https://${process.env.RAPIDAPI_HOST}`;
-  const rapidApiHeaders = {
-    'X-RapidAPI-Key': process.env.RAPIDAPI_KEY!,
-    'X-RapidAPI-Host': process.env.RAPIDAPI_HOST!,
-  };
-
   try {
-    const SCAN_QUERIES = [
-      `from:${cleanHandle} @get_optimum -is:retweet`,
-      `from:${cleanHandle} get_optimum -is:retweet`,
-      `from:${cleanHandle} optimum -is:retweet`,
+    // STRATEGY: Search the global @get_optimum feed and filter for this user.
+    // "from:handle" on RapidAPI is unreliable — global search + filter is more accurate.
+    const searchQueries = [
+      '@get_optimum -is:retweet',
+      'get_optimum -is:retweet',
+      `"${cleanHandle}" optimum`,
+      `"${cleanHandle}" get_optimum`,
     ];
 
+    const userTweets: any[] = [];
     const seenIds = new Set<string>();
-    const allTweets: any[] = [];
+    let userProfile: any = null;
 
-    for (const q of SCAN_QUERIES) {
+    for (const query of searchQueries) {
       let cursor = '';
-      for (let page = 0; page < 3; page++) {
-        const url = RAPIDAPI_BASE + '/search?query=' + encodeURIComponent(q) +
-          '&count=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
-        const r = await fetch(url, { method: 'GET', headers: rapidApiHeaders });
-        if (!r.ok) break;
-        const data: any = await r.json();
-        const pageTweets = parseTweetsFromResponse(data);
-        for (const t of pageTweets) {
-          // Only count tweets authored by this user
-          if (t.user_id !== cleanHandle) continue;
-          const key = t.tweet_id || `${t.user_id}:${t.views}:${t.likes}`;
-          if (seenIds.has(key)) continue;
-          seenIds.add(key);
-          allTweets.push(t);
+      let page = 0;
+      const MAX_PAGES = 5;
+
+      while (page < MAX_PAGES) {
+        const url =
+          `https://${RAPIDAPI_HOST}/search` +
+          `?query=${encodeURIComponent(query)}&count=100` +
+          (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+
+        console.log(`Query: "${query}" page ${page + 1}`);
+
+        const resp = await fetch(url, {
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST,
+          },
+        });
+
+        if (!resp.ok) {
+          console.log(`Failed: ${resp.status}`);
+          break;
         }
-        const next = findNextCursor(data);
-        if (!next || pageTweets.length === 0) break;
-        cursor = next;
+
+        const data = await resp.json();
+        const tweets = parseTweetsFromResponse(data);
+        console.log(`Found ${tweets.length} tweets on page ${page + 1}`);
+
+        for (const tweet of tweets) {
+          const tweetHandle =
+            tweet.screen_name?.toLowerCase() ||
+            tweet.user_id?.toLowerCase() ||
+            '';
+
+          if (tweetHandle === cleanHandle) {
+            const key = tweet.tweet_id || `${tweetHandle}:${tweet.views}:${tweet.likes}`;
+            if (!seenIds.has(key)) {
+              seenIds.add(key);
+              userTweets.push(tweet);
+              if (!userProfile && tweet.avatar_url) {
+                userProfile = {
+                  display_name: tweet.display_name,
+                  avatar_url: tweet.avatar_url,
+                  verified: tweet.verified,
+                  followers_count: tweet.followers_count,
+                };
+              }
+            }
+          }
+        }
+
+        if (userTweets.length > 0) {
+          console.log(`Found ${userTweets.length} posts by @${cleanHandle} so far`);
+        }
+
+        const nextCursor = findNextCursor(data);
+        if (!nextCursor || tweets.length === 0) break;
+        cursor = nextCursor;
+        page++;
         await new Promise(r => setTimeout(r, 800));
+
+        // Stop early once we have enough posts
+        if (userTweets.length >= 50) break;
       }
+
       await new Promise(r => setTimeout(r, 1000));
     }
 
-    // Broader fallback: search general optimum tweets and filter for this user.
-    // Catches posts where the user doesn't tag @get_optimum directly every time.
-    const GENERAL_QUERIES = [
-      `@get_optimum -is:retweet`,
-      `get_optimum -is:retweet`,
-    ];
-    for (const q of GENERAL_QUERIES) {
+    console.log(`Total posts found for @${cleanHandle}: ${userTweets.length}`);
+
+    // Fallback: try search_v2 endpoint if still nothing
+    if (userTweets.length === 0) {
+      console.log('Trying search_v2 endpoint...');
       try {
-        const url = RAPIDAPI_BASE + '/search?query=' + encodeURIComponent(q) + '&count=100';
-        const r = await fetch(url, { method: 'GET', headers: rapidApiHeaders });
-        if (!r.ok) continue;
-        const data: any = await r.json();
-        const pageTweets = parseTweetsFromResponse(data);
-        for (const t of pageTweets) {
-          if (t.user_id !== cleanHandle) continue;
-          const key = t.tweet_id || `${t.user_id}:${t.views}:${t.likes}`;
-          if (seenIds.has(key)) continue;
-          seenIds.add(key);
-          allTweets.push(t);
-        }
-      } catch (_) {}
-      await new Promise(r => setTimeout(r, 800));
-    }
-
-    console.log(`Scan complete: ${allTweets.length} posts for @${cleanHandle}`);
-
-    let totalViews = 0;
-    let totalLikes = 0;
-    let postCount = 0;
-    let profileFromTweets: any = null;
-
-    for (const tweet of allTweets) {
-      totalViews += tweet.views;
-      totalLikes += tweet.likes;
-      postCount += 1;
-      if (!profileFromTweets) {
-        profileFromTweets = {
-          display_name: tweet.display_name,
-          avatar_url: tweet.avatar_url,
-          verified: tweet.verified,
-          followers_count: tweet.followers_count,
-        };
-      }
-    }
-
-    // Fallback: fetch profile via user/details endpoint
-    if (!profileFromTweets) {
-      try {
-        const profileRes = await fetch(
-          `${RAPIDAPI_BASE}/user/details?username=${cleanHandle}`,
-          { method: 'GET', headers: rapidApiHeaders }
+        const v2Resp = await fetch(
+          `https://${RAPIDAPI_HOST}/search_v2` +
+          `?query=${encodeURIComponent(`from:${cleanHandle} optimum`)}&count=100`,
+          {
+            headers: {
+              'X-RapidAPI-Key': RAPIDAPI_KEY,
+              'X-RapidAPI-Host': RAPIDAPI_HOST,
+            },
+          }
         );
-        if (profileRes.ok) {
-          const profileData: any = await profileRes.json();
-          const legacy = profileData?.data?.user?.result?.legacy ||
-            profileData?.user?.result?.legacy ||
-            profileData?.user?.legacy || profileData?.legacy || null;
-          profileFromTweets = {
-            display_name: legacy?.name || cleanHandle,
-            avatar_url: (
-              legacy?.profile_image_url_https || legacy?.profile_image_url || ''
-            ).replace('_normal.jpg', '_400x400.jpg').replace('_normal.png', '_400x400.png'),
-            verified: profileData?.data?.user?.result?.is_blue_verified || false,
-            followers_count:
-              legacy?.followers_count || legacy?.normal_followers_count || 0,
-          };
+        if (v2Resp.ok) {
+          const v2Data = await v2Resp.json();
+          console.log('search_v2 response:', JSON.stringify(v2Data).slice(0, 200));
+          const v2Tweets = parseTweetsFromResponse(v2Data);
+          for (const tweet of v2Tweets) {
+            const key = tweet.tweet_id || `${tweet.user_id}:${tweet.views}:${tweet.likes}`;
+            if (tweet.user_id === cleanHandle && !seenIds.has(key)) {
+              seenIds.add(key);
+              userTweets.push(tweet);
+            }
+          }
         }
-      } catch (profileErr) {
-        console.error('Profile fallback fetch failed:', profileErr);
+      } catch (v2Err) {
+        console.log('search_v2 failed:', v2Err);
       }
     }
 
-    if (getApps().length) {
-      const adminDb = getFirestore();
-
-      // Read existing to apply Math.max (never go backwards)
-      const existingDoc = await adminDb.collection('indexed_users').doc(cleanHandle).get();
-      const existing = existingDoc.exists ? existingDoc.data()! : null;
-
-      const finalUser = {
-        x_handle: cleanHandle,
-        display_name: profileFromTweets?.display_name || existing?.display_name || cleanHandle,
-        avatar_url:
-          profileFromTweets?.avatar_url ||
-          existing?.avatar_url ||
-          `https://unavatar.io/twitter/${cleanHandle}`,
-        verified: profileFromTweets?.verified || existing?.verified || false,
-        followers_count: Math.max(
-          profileFromTweets?.followers_count || 0,
-          existing?.followers_count || 0
-        ),
-        total_views: Math.max(totalViews, existing?.total_views || 0),
-        total_likes: Math.max(totalLikes, existing?.total_likes || 0),
-        total_posts: Math.max(postCount, existing?.total_posts || 0),
-        last_indexed_at: FieldValue.serverTimestamp(),
-      };
-
-      await adminDb.collection('indexed_users').doc(cleanHandle).set(finalUser, { merge: true });
-
-      // Re-rank all users by total_views
-      const allSnapshot = await adminDb.collection('indexed_users').orderBy('total_views', 'desc').get();
-      const totalUsers = allSnapshot.size;
-      const BATCH_SIZE = 499;
-      const reRankBatches: ReturnType<typeof adminDb.batch>[] = [];
-      let reRankBatch = adminDb.batch();
-      let reRankOpCount = 0;
-      let rankN = 1;
-
-      allSnapshot.forEach((rankDoc) => {
-        if (reRankOpCount >= BATCH_SIZE) {
-          reRankBatches.push(reRankBatch);
-          reRankBatch = adminDb.batch();
-          reRankOpCount = 0;
-        }
-        const docData = rankDoc.data();
-        const hasActivity = (docData.total_posts || 0) > 0 || (docData.total_views || 0) > 0;
-        if (hasActivity) {
-          reRankBatch.update(rankDoc.ref, {
-            rank_views: rankN,
-            rank_likes: rankN,
-            rank_posts: rankN,
-            total_users: totalUsers,
-            badge: rankN === 1 ? 'gold' : rankN === 2 ? 'silver' :
-                   rankN === 3 ? 'bronze' : rankN <= 10 ? 'top10' : null,
+    // Profile fallback: try multiple endpoints if no profile from tweets
+    if (!userProfile) {
+      console.log('Fetching profile for:', cleanHandle);
+      const profileEndpoints = [
+        `/user/details?username=${cleanHandle}`,
+        `/user/info?userName=${cleanHandle}`,
+        `/users?username=${cleanHandle}`,
+      ];
+      for (const endpoint of profileEndpoints) {
+        try {
+          const pResp = await fetch(`https://${RAPIDAPI_HOST}${endpoint}`, {
+            headers: {
+              'X-RapidAPI-Key': RAPIDAPI_KEY,
+              'X-RapidAPI-Host': RAPIDAPI_HOST,
+            },
           });
-          rankN++;
-        } else {
-          reRankBatch.update(rankDoc.ref, {
-            rank_views: null,
-            rank_likes: null,
-            rank_posts: null,
-            badge: null,
-            total_users: totalUsers,
-          });
-        }
-        reRankOpCount++;
-      });
-      reRankBatches.push(reRankBatch);
-      for (const b of reRankBatches) await b.commit();
-      console.log(`Re-ranked ${totalUsers} users after scan of @${cleanHandle}`);
+          if (!pResp.ok) continue;
+          const pData = await pResp.json();
+          console.log(`Profile from ${endpoint}:`, JSON.stringify(pData).slice(0, 300));
 
-      const updatedDoc = await adminDb.collection('indexed_users').doc(cleanHandle).get();
-      return res.status(200).json({
-        success: true,
-        user: { ...updatedDoc.data(), x_handle: cleanHandle },
-      });
+          const legacy =
+            pData?.data?.user?.result?.legacy ||
+            pData?.user?.result?.legacy ||
+            pData?.user?.legacy ||
+            pData?.legacy ||
+            pData?.result?.legacy ||
+            null;
+
+          if (legacy?.name || legacy?.screen_name) {
+            userProfile = {
+              display_name: legacy.name || cleanHandle,
+              avatar_url: (
+                legacy.profile_image_url_https ||
+                legacy.profile_image_url ||
+                ''
+              ).replace('_normal.jpg', '_400x400.jpg').replace('_normal.png', '_400x400.png'),
+              verified:
+                pData?.data?.user?.result?.is_blue_verified ||
+                legacy.verified ||
+                false,
+              followers_count: legacy.followers_count || legacy.normal_followers_count || 0,
+            };
+            console.log('Got profile:', userProfile);
+            break;
+          }
+        } catch (endpointErr) {
+          console.log(`Endpoint ${endpoint} failed:`, endpointErr);
+        }
+      }
     }
 
-    return res.status(200).json({
+    // Merge with existing Firestore data (never go backwards)
+    const existingDoc = await db.collection('indexed_users').doc(cleanHandle).get();
+    const existing = existingDoc.exists ? existingDoc.data()! : null;
+
+    const totalViews = userTweets.reduce((s, t) => s + (t.views || 0), 0);
+    const totalLikes = userTweets.reduce((s, t) => s + (t.likes || 0), 0);
+
+    const finalUser: any = {
+      x_handle: cleanHandle,
+      display_name: userProfile?.display_name || existing?.display_name || cleanHandle,
+      avatar_url:
+        userProfile?.avatar_url ||
+        existing?.avatar_url ||
+        `https://unavatar.io/twitter/${cleanHandle}`,
+      verified: userProfile?.verified || existing?.verified || false,
+      followers_count: Math.max(
+        userProfile?.followers_count || 0,
+        existing?.followers_count || 0
+      ),
+      total_views: Math.max(totalViews, existing?.total_views || 0),
+      total_likes: Math.max(totalLikes, existing?.total_likes || 0),
+      total_posts: Math.max(userTweets.length, existing?.total_posts || 0),
+      last_indexed_at: admin.firestore.FieldValue.serverTimestamp(),
+      created_at: existing?.created_at || admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await db.collection('indexed_users').doc(cleanHandle).set(finalUser, { merge: true });
+
+    // Rerank all users by total_views (multi-batch — safe for >499 users)
+    const allSnap = await db.collection('indexed_users').orderBy('total_views', 'desc').get();
+    const total = allSnap.size;
+    const rankDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+    allSnap.forEach(doc => rankDocs.push(doc));
+
+    let rank = 1;
+    for (let i = 0; i < rankDocs.length; i += 499) {
+      const batch = db.batch();
+      for (const doc of rankDocs.slice(i, i + 499)) {
+        const d = doc.data();
+        const hasActivity = (d.total_views || 0) > 0 || (d.total_posts || 0) > 0;
+        batch.update(doc.ref, {
+          rank_views: hasActivity ? rank++ : null,
+          total_users: total,
+        });
+      }
+      await batch.commit();
+    }
+
+    const updatedDoc = await db.collection('indexed_users').doc(cleanHandle).get();
+    const updatedUser = updatedDoc.data();
+
+    console.log(
+      `Scan complete for @${cleanHandle}:`,
+      `posts=${updatedUser?.total_posts}`,
+      `views=${updatedUser?.total_views}`,
+      `rank=${updatedUser?.rank_views}`
+    );
+
+    return res.json({
       success: true,
-      user: {
-        x_handle: cleanHandle,
-        display_name: profileFromTweets?.display_name || cleanHandle,
-        avatar_url: profileFromTweets?.avatar_url || `https://unavatar.io/twitter/${cleanHandle}`,
-        verified: profileFromTweets?.verified || false,
-        followers_count: profileFromTweets?.followers_count || 0,
-        total_views: totalViews,
-        total_likes: totalLikes,
-        total_posts: postCount,
-      },
+      user: updatedUser,
+      postsFound: userTweets.length,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message || 'Serverless scan failed' });
+  } catch (err: any) {
+    console.error('Scan error:', err);
+    return res.status(500).json({ error: String(err) });
   }
 }

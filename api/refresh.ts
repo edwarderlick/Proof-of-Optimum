@@ -1,23 +1,30 @@
-import dotenv from 'dotenv';
-import path from 'path';
-dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
-
 import { VercelRequest, VercelResponse } from '@vercel/node';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import * as admin from 'firebase-admin';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 
-if (getApps().length === 0 && process.env.FIREBASE_PROJECT_ID) {
-  try {
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
-    initializeApp({
-      credential: cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: privateKey,
-      }),
+if (!admin.apps?.length) {
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+
+  if (!privateKey || !clientEmail || !projectId) {
+    console.error('Missing Firebase env vars:', {
+      hasPrivateKey: !!privateKey,
+      hasClientEmail: !!clientEmail,
+      hasProjectId: !!projectId,
     });
-  } catch (error) {
-    console.error('Firebase Admin init error in serverless:', error);
+  } else {
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId,
+          clientEmail,
+          privateKey: privateKey.replace(/\\n/g, '\n'),
+        }),
+      });
+    } catch (error) {
+      console.error('Firebase Admin init error:', error);
+    }
   }
 }
 
@@ -118,6 +125,15 @@ const QUERIES = [
 ];
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Content-Type', 'application/json');
+
+  if (!admin.apps?.length) {
+    return res.status(500).json({
+      error: 'Database not initialized — check FIREBASE_* env vars in Vercel dashboard',
+      success: false,
+    });
+  }
+
   if (!process.env.RAPIDAPI_KEY) {
     return res.status(200).json({
       success: true,

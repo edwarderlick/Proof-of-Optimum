@@ -1,25 +1,33 @@
-import dotenv from 'dotenv';
-import path from 'path';
-dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
-
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import * as admin from 'firebase-admin';
 
-if (!admin.apps.length && process.env.FIREBASE_PROJECT_ID) {
-  try {
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-      }),
+if (!admin.apps?.length) {
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+
+  if (!privateKey || !clientEmail || !projectId) {
+    console.error('Missing Firebase env vars:', {
+      hasPrivateKey: !!privateKey,
+      hasClientEmail: !!clientEmail,
+      hasProjectId: !!projectId,
     });
-  } catch (error) {
-    console.error('Firebase Admin init error:', error);
+  } else {
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId,
+          clientEmail,
+          privateKey: privateKey.replace(/\\n/g, '\n'),
+        }),
+      });
+    } catch (error) {
+      console.error('Firebase Admin init error:', error);
+    }
   }
 }
 
-const db = admin.apps.length ? admin.firestore() : null;
+const db = admin.apps?.length ? admin.firestore() : null;
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -92,6 +100,15 @@ function findNextCursor(data: any): string | null {
 // ── HANDLER ───────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Content-Type', 'application/json');
+
+  if (!db) {
+    return res.status(500).json({
+      error: 'Database not initialized — check FIREBASE_* env vars in Vercel dashboard',
+      success: false,
+    });
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }

@@ -1,0 +1,6 @@
+{
+  "name": "Proof of Optimum",
+  "description": "Public leaderboard tracking contributions, posts, likes, and views for the Optimum ecosystem on X/Twitter.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Public read access for indexed users (restricted writes to server/admin)
+    match /indexed_users/{x_handle} {
+      allow read: if true;
+      allow write: if false; // Only server/admin SDK writes allowed
+    }
+
+    // Public read access for global stats
+    match /global_stats/stats {
+      allow read: if true;
+      allow write: if false; // Only server/admin SDK writes allowed
+    }
+  }
+}

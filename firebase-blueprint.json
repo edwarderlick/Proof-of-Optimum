@@ -1,0 +1,109 @@
+{
+  "entities": {
+    "indexed_user": {
+      "title": "Indexed User",
+      "description": "Represents an indexed developer/influencer contributing to the Optimum ecosystem on X/Twitter.",
+      "type": "object",
+      "properties": {
+        "x_handle": {
+          "type": "string",
+          "description": "Unique X screen name/handle."
+        },
+        "display_name": {
+          "type": "string",
+          "description": "The user's display name."
+        },
+        "avatar_url": {
+          "type": "string",
+          "description": "Profile picture url."
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "Whether the user's X account is verified."
+        },
+        "followers_count": {
+          "type": "integer",
+          "description": "The number of followers on X."
+        },
+        "total_views": {
+          "type": "integer",
+          "description": "Total views generated on posts containing Optimum keywords."
+        },
+        "total_likes": {
+          "type": "integer",
+          "description": "Total likes received on posts containing Optimum keywords."
+        },
+        "total_posts": {
+          "type": "integer",
+          "description": "Total number of posts made containing Optimum keywords."
+        },
+        "rank_views": {
+          "type": "integer",
+          "description": "The global rank based on total views."
+        },
+        "rank_likes": {
+          "type": "integer",
+          "description": "The global rank based on total likes."
+        },
+        "rank_posts": {
+          "type": "integer",
+          "description": "The global rank based on total posts."
+        },
+        "badge": {
+          "type": "string",
+          "description": "Custom rank badge: top1, top5, top10, or null."
+        },
+        "last_indexed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The timestamp when the profile stats were last synced."
+        }
+      },
+      "required": ["x_handle", "display_name", "total_views", "total_likes", "total_posts"]
+    },
+    "global_stats": {
+      "title": "Global Stats",
+      "description": "System-wide network stats aggregated across all indexed users.",
+      "type": "object",
+      "properties": {
+        "total_views": {
+          "type": "integer",
+          "description": "Sum of views across all indexed users."
+        },
+        "total_likes": {
+          "type": "integer",
+          "description": "Sum of likes across all indexed users."
+        },
+        "total_posts": {
+          "type": "integer",
+          "description": "Sum of posts across all indexed users."
+        },
+        "indexed_users": {
+          "type": "integer",
+          "description": "Total number of indexed users."
+        },
+        "last_updated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last updated timestamp."
+        },
+        "next_update_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Scheduled next cron update timestamp."
+        }
+      },
+      "required": ["total_views", "total_likes", "total_posts", "indexed_users"]
+    }
+  },
+  "firestore": {
+    "/indexed_users/{x_handle}": {
+      "schema": "indexed_user",
+      "description": "Individual index user documents tracked by the crawler."
+    },
+    "/global_stats/stats": {
+      "schema": "global_stats",
+      "description": "Single aggregated stats document."
+    }
+  }
+}

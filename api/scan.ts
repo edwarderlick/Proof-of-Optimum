@@ -1,35 +1,41 @@
 // @ts-nocheck
+import { createRequire } from 'module';
 import { VercelRequest, VercelResponse } from '@vercel/node';
-import firebaseAdmin from 'firebase-admin';
+
+const require = createRequire(import.meta.url);
+const admin = require('firebase-admin');
 
 let db: any = null;
 
 try {
-  if (!firebaseAdmin.apps.length) {
+  if (!admin.apps || !admin.apps.length) {
     const privateKey = process.env.FIREBASE_PRIVATE_KEY;
     const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
     const projectId = process.env.FIREBASE_PROJECT_ID;
 
-    if (!privateKey || !clientEmail || !projectId) {
-      console.error('Missing Firebase env vars:', {
-        projectId: !!projectId,
-        clientEmail: !!clientEmail,
-        privateKey: !!privateKey,
-      });
-    } else {
-      firebaseAdmin.initializeApp({
-        credential: firebaseAdmin.credential.cert({
+    console.log('Firebase env check:', {
+      projectId: !!projectId,
+      clientEmail: !!clientEmail,
+      privateKey: !!privateKey,
+    });
+
+    if (privateKey && clientEmail && projectId) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
           projectId,
           clientEmail,
           privateKey: privateKey.replace(/\\n/g, '\n'),
         }),
       });
-      console.log('Firebase Admin initialized OK');
+      console.log('✅ Firebase Admin initialized');
+    } else {
+      console.error('❌ Missing Firebase env vars');
     }
   }
-  db = firebaseAdmin.firestore();
+  db = admin.firestore();
+  console.log('✅ Firestore connected');
 } catch (err) {
-  console.error('Firebase Admin init error:', err);
+  console.error('❌ Firebase init error:', String(err));
 }
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -445,8 +451,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total_views: Math.max(totalViews, existing?.total_views || 0),
       total_likes: Math.max(totalLikes, existing?.total_likes || 0),
       total_posts: Math.max(userTweets.length, existing?.total_posts || 0),
-      last_indexed_at: firebaseAdmin.firestore.FieldValue.serverTimestamp(),
-      created_at: existing?.created_at || firebaseAdmin.firestore.FieldValue.serverTimestamp(),
+      last_indexed_at: admin.firestore.FieldValue.serverTimestamp(),
+      created_at: existing?.created_at || admin.firestore.FieldValue.serverTimestamp(),
     };
 
     await db.collection('indexed_users').doc(cleanHandle).set(finalUser, { merge: true });

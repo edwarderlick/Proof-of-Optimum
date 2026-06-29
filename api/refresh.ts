@@ -1,35 +1,36 @@
+// @ts-nocheck
 import { VercelRequest, VercelResponse } from '@vercel/node';
-import { initializeApp, getApps, cert } from 'firebase-admin/app';
-import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
+import firebaseAdmin from 'firebase-admin';
 
-if (!getApps().length) {
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+let db: any = null;
 
-  if (!privateKey || !clientEmail || !projectId) {
-    console.error('Missing Firebase env vars:', {
-      projectId: !!projectId,
-      clientEmail: !!clientEmail,
-      privateKey: !!privateKey,
-    });
-  } else {
-    try {
-      initializeApp({
-        credential: cert({
+try {
+  if (!firebaseAdmin.apps.length) {
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+
+    if (!privateKey || !clientEmail || !projectId) {
+      console.error('Missing Firebase env vars:', {
+        projectId: !!projectId,
+        clientEmail: !!clientEmail,
+        privateKey: !!privateKey,
+      });
+    } else {
+      firebaseAdmin.initializeApp({
+        credential: firebaseAdmin.credential.cert({
           projectId,
           clientEmail,
           privateKey: privateKey.replace(/\\n/g, '\n'),
         }),
       });
-      console.log('Firebase Admin initialized');
-    } catch (error) {
-      console.error('Firebase Admin init error:', error);
+      console.log('Firebase Admin initialized OK');
     }
   }
+  db = firebaseAdmin.firestore();
+} catch (err) {
+  console.error('Firebase Admin init error:', err);
 }
-
-const db = getApps().length ? getFirestore() : null;
 
 function parseTweetsFromResponse(data: any): any[] {
   const tweets: any[] = [];
@@ -254,7 +255,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rank_views: rank, rank_likes: rank, rank_posts: rank,
         total_users: sortedUsers.length,
         badge: rank <= 3 ? 'top3' : rank <= 10 ? 'top10' : null,
-        last_indexed_at: FieldValue.serverTimestamp(),
+        last_indexed_at: firebaseAdmin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       opCount++;
     });
@@ -269,8 +270,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total_likes: totalLikes,
       total_posts: totalPosts,
       indexed_users: sortedUsers.length,
-      last_updated_at: FieldValue.serverTimestamp(),
-      next_update_at: Timestamp.fromDate(new Date(Date.now() + 6 * 60 * 60 * 1000)),
+      last_updated_at: firebaseAdmin.firestore.FieldValue.serverTimestamp(),
+      next_update_at: firebaseAdmin.firestore.Timestamp.fromDate(new Date(Date.now() + 6 * 60 * 60 * 1000)),
     });
     batches.push(batch);
 

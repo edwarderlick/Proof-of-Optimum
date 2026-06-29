@@ -1,20 +1,38 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import * as admin from 'firebase-admin';
+import type { Firestore } from 'firebase-admin/firestore';
 
-function getFirestore() {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const admin = require('firebase-admin');
+let _db: Firestore | null = null;
 
-  if (!admin.apps.length) {
+function getDb(): Firestore {
+  if (_db) return _db;
+
+  console.log('Initializing Firebase...');
+  console.log('Apps length:', admin.apps?.length);
+
+  if (!admin.apps?.length) {
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+
+    console.log('Env vars:', {
+      projectId: !!projectId,
+      clientEmail: !!clientEmail,
+      privateKey: !!privateKey,
+    });
+
     admin.initializeApp({
       credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+        projectId: projectId!,
+        clientEmail: clientEmail!,
+        privateKey: privateKey!,
       }),
     });
   }
 
-  return admin.firestore();
+  _db = admin.firestore();
+  console.log('Firebase ready ✅');
+  return _db;
 }
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -137,15 +155,13 @@ function parseTimelineResponse(data: any, handleFallback: string): any[] {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Content-Type', 'application/json');
 
-  let db: any;
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const fbase = require('firebase-admin');
+  let db: Firestore;
   try {
-    db = getFirestore();
+    db = getDb();
   } catch (err) {
-    console.error('Firebase error:', String(err));
+    console.error('DB init failed:', String(err));
     return res.status(500).json({
-      error: 'Firebase failed: ' + String(err),
+      error: String(err),
       success: false,
     });
   }
@@ -436,8 +452,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total_views: Math.max(totalViews, existing?.total_views || 0),
       total_likes: Math.max(totalLikes, existing?.total_likes || 0),
       total_posts: Math.max(userTweets.length, existing?.total_posts || 0),
-      last_indexed_at: fbase.firestore.FieldValue.serverTimestamp(),
-      created_at: existing?.created_at || fbase.firestore.FieldValue.serverTimestamp(),
+      last_indexed_at: admin.firestore.FieldValue.serverTimestamp(),
+      created_at: existing?.created_at || admin.firestore.FieldValue.serverTimestamp(),
     };
 
     await db.collection('indexed_users').doc(cleanHandle).set(finalUser, { merge: true });

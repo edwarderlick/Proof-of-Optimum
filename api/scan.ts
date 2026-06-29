@@ -99,6 +99,53 @@ function findNextCursor(data: any): string | null {
   return null;
 }
 
+function parseTimelineResponse(data: any, handleFallback: string): any[] {
+  const tweets: any[] = [];
+
+  const tweetList =
+    data?.tweets ||
+    data?.data ||
+    data?.results ||
+    data?.timeline ||
+    (Array.isArray(data) ? data : null) ||
+    [];
+
+  for (const item of tweetList) {
+    const text = item?.full_text || item?.text || item?.legacy?.full_text || '';
+    const userLegacy =
+      item?.author ||
+      item?.user ||
+      item?.core?.user_results?.result?.legacy ||
+      item?.legacy?.user ||
+      {};
+    const screenName = (
+      userLegacy?.screen_name ||
+      item?.author?.screen_name ||
+      handleFallback
+    ).toLowerCase();
+
+    tweets.push({
+      tweet_id: item?.id || item?.id_str || item?.rest_id || '',
+      user_id: screenName,
+      screen_name: screenName,
+      display_name: userLegacy?.name || handleFallback,
+      avatar_url: (
+        userLegacy?.profile_image_url_https ||
+        userLegacy?.profile_image_url ||
+        item?.author?.profile_image_url_https ||
+        ''
+      ).replace('_normal', '_400x400'),
+      verified: item?.author?.is_blue_verified || userLegacy?.verified || false,
+      followers_count: userLegacy?.followers_count || item?.author?.followers_count || 0,
+      views: parseInt(item?.views?.count || item?.view_count || '0'),
+      likes: item?.favorite_count || item?.legacy?.favorite_count || item?.like_count || 0,
+      full_text: text,
+    });
+  }
+
+  return tweets;
+}
+
 // ── HANDLER ───────────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -119,7 +166,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!handle) return res.status(400).json({ error: 'No handle' });
 
   const cleanHandle = handle.replace('@', '').toLowerCase().trim();
-  console.log('Scanning for:', cleanHandle);
+  console.log(`=== SCAN DEBUG for ${cleanHandle} ===`);
 
   const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY!;
   const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST!;
@@ -241,7 +288,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         );
         if (v2Resp.ok) {
           const v2Data = await v2Resp.json();
-          console.log('search_v2 response:', JSON.stringify(v2Data).slice(0, 200));
+          console.log('FULL search_v2 response:', JSON.stringify(v2Data));
           const v2Tweets = parseTweetsFromResponse(v2Data);
           for (const tweet of v2Tweets) {
             const key = tweet.tweet_id || `${tweet.user_id}:${tweet.views}:${tweet.likes}`;
@@ -253,6 +300,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       } catch (v2Err) {
         console.log('search_v2 failed:', v2Err);
+      }
+    }
+
+    // Timeline fallback: fetch the user's own tweet timeline when search returns nothing
+    if (userTweets.length === 0) {
+      console.log('All search strategies found 0 — trying user timeline...');
+
+      const timelineEndpoints = [
+        `/user/tweets?username=${cleanHandle}&limit=100`,
+        `/timeline?username=${cleanHandle}&limit=100`,
+        `/tweets?username=${cleanHandle}&count=100`,
+        `/user/last_tweets?username=${cleanHandle}`,
+      ];
+
+      for (const endpoint of timelineEndpoints) {
+        try {
+          const url = `https://${RAPIDAPI_HOST}${endpoint}`;
+          console.log('Trying timeline endpoint:', url);
+
+          const tlResp = await fetch(url, {
+            headers: {
+              'X-RapidAPI-Key': RAPIDAPI_KEY,
+              'X-RapidAPI-Host': RAPIDAPI_HOST,
+            },
+          });
+
+          console.log(`Timeline ${endpoint}: status ${tlResp.status}`);
+          if (!tlResp.ok) continue;
+
+          const tlData = await tlResp.json();
+          console.log('FULL TIMELINE RESPONSE:', JSON.stringify(tlData));
+
+          const timelineTweets = parseTimelineResponse(tlData, cleanHandle);
+          console.log(`Timeline parsed ${timelineTweets.length} tweets`);
+
+          const optimumTweets = timelineTweets.filter(t => {
+            const text = (t.full_text || '').toLowerCase();
+            return text.includes('optimum') || text.includes('get_optimum') || text.includes('@get_optimum');
+          });
+          console.log(`Optimum-related tweets from timeline: ${optimumTweets.length}`);
+
+          if (optimumTweets.length > 0) {
+            for (const tweet of optimumTweets) {
+              const key = tweet.tweet_id || `${tweet.user_id}:${tweet.views}:${tweet.likes}`;
+              if (!seenIds.has(key)) {
+                seenIds.add(key);
+                userTweets.push(tweet);
+              }
+            }
+          }
+
+          // Grab profile data from timeline even if no optimum tweets
+          if (!userProfile && timelineTweets.length > 0) {
+            const first = timelineTweets[0];
+            userProfile = {
+              display_name: first.display_name || cleanHandle,
+              avatar_url: first.avatar_url || '',
+              verified: first.verified || false,
+              followers_count: first.followers_count || 0,
+            };
+          }
+
+          if (userTweets.length > 0) break;
+        } catch (endpointErr) {
+          console.log(`Timeline endpoint ${endpoint} failed:`, endpointErr);
+        }
+
+        await new Promise(r => setTimeout(r, 500));
       }
     }
 
@@ -274,7 +389,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
           if (!pResp.ok) continue;
           const pData = await pResp.json();
-          console.log(`Profile from ${endpoint}:`, JSON.stringify(pData).slice(0, 300));
+          console.log(`FULL profile response from ${endpoint}:`, JSON.stringify(pData));
 
           const legacy =
             pData?.data?.user?.result?.legacy ||

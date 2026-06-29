@@ -1,36 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import * as admin from 'firebase-admin';
 
-let db: FirebaseFirestore.Firestore | null = null;
+function getFirestore() {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const admin = require('firebase-admin');
 
-if (!admin.apps.length) {
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-
-  if (privateKey && clientEmail && projectId) {
-    try {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId,
-          clientEmail,
-          privateKey: privateKey.replace(/\\n/g, '\n'),
-        }),
-      });
-      console.log('✅ Firebase initialized');
-      db = admin.firestore();
-    } catch (err) {
-      console.error('Firebase init error:', err);
-    }
-  } else {
-    console.error('Missing Firebase env vars:', {
-      projectId: !!projectId,
-      clientEmail: !!clientEmail,
-      privateKey: !!privateKey,
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+      }),
     });
   }
-} else {
-  db = admin.firestore();
+
+  return admin.firestore();
 }
 
 function parseTweetsFromResponse(data: any): any[] {
@@ -132,9 +116,15 @@ const QUERIES = [
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Content-Type', 'application/json');
 
-  if (!db) {
+  let db: any;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fbase = require('firebase-admin');
+  try {
+    db = getFirestore();
+  } catch (err) {
+    console.error('Firebase error:', String(err));
     return res.status(500).json({
-      error: 'Database not initialized — check FIREBASE_* env vars in Vercel dashboard',
+      error: 'Firebase failed: ' + String(err),
       success: false,
     });
   }
@@ -256,7 +246,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rank_views: rank, rank_likes: rank, rank_posts: rank,
         total_users: sortedUsers.length,
         badge: rank <= 3 ? 'top3' : rank <= 10 ? 'top10' : null,
-        last_indexed_at: admin.firestore.FieldValue.serverTimestamp(),
+        last_indexed_at: fbase.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       opCount++;
     });
@@ -271,8 +261,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total_likes: totalLikes,
       total_posts: totalPosts,
       indexed_users: sortedUsers.length,
-      last_updated_at: admin.firestore.FieldValue.serverTimestamp(),
-      next_update_at: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 6 * 60 * 60 * 1000)),
+      last_updated_at: fbase.firestore.FieldValue.serverTimestamp(),
+      next_update_at: fbase.firestore.Timestamp.fromDate(new Date(Date.now() + 6 * 60 * 60 * 1000)),
     });
     batches.push(batch);
 

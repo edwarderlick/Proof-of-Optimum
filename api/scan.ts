@@ -1,36 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import * as admin from 'firebase-admin';
 
-let db: FirebaseFirestore.Firestore | null = null;
+function getFirestore() {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const admin = require('firebase-admin');
 
-if (!admin.apps.length) {
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-
-  if (privateKey && clientEmail && projectId) {
-    try {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId,
-          clientEmail,
-          privateKey: privateKey.replace(/\\n/g, '\n'),
-        }),
-      });
-      console.log('✅ Firebase initialized');
-      db = admin.firestore();
-    } catch (err) {
-      console.error('Firebase init error:', err);
-    }
-  } else {
-    console.error('Missing Firebase env vars:', {
-      projectId: !!projectId,
-      clientEmail: !!clientEmail,
-      privateKey: !!privateKey,
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+      }),
     });
   }
-} else {
-  db = admin.firestore();
+
+  return admin.firestore();
 }
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -153,9 +137,15 @@ function parseTimelineResponse(data: any, handleFallback: string): any[] {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Content-Type', 'application/json');
 
-  if (!db) {
+  let db: any;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fbase = require('firebase-admin');
+  try {
+    db = getFirestore();
+  } catch (err) {
+    console.error('Firebase error:', String(err));
     return res.status(500).json({
-      error: 'Database not initialized — check FIREBASE_* env vars in Vercel dashboard',
+      error: 'Firebase failed: ' + String(err),
       success: false,
     });
   }
@@ -173,7 +163,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY!;
   const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST!;
 
-  if (!RAPIDAPI_KEY || !db) {
+  if (!RAPIDAPI_KEY) {
     return res.status(200).json({
       success: true,
       simulated: true,
@@ -446,8 +436,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total_views: Math.max(totalViews, existing?.total_views || 0),
       total_likes: Math.max(totalLikes, existing?.total_likes || 0),
       total_posts: Math.max(userTweets.length, existing?.total_posts || 0),
-      last_indexed_at: admin.firestore.FieldValue.serverTimestamp(),
-      created_at: existing?.created_at || admin.firestore.FieldValue.serverTimestamp(),
+      last_indexed_at: fbase.firestore.FieldValue.serverTimestamp(),
+      created_at: existing?.created_at || fbase.firestore.FieldValue.serverTimestamp(),
     };
 
     await db.collection('indexed_users').doc(cleanHandle).set(finalUser, { merge: true });
@@ -455,7 +445,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Rerank all users by total_views (multi-batch — safe for >499 users)
     const allSnap = await db.collection('indexed_users').orderBy('total_views', 'desc').get();
     const total = allSnap.size;
-    const rankDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+    const rankDocs: any[] = [];
     allSnap.forEach(doc => rankDocs.push(doc));
 
     let rank = 1;

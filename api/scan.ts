@@ -1,33 +1,35 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
-if (!admin.apps?.length) {
+if (!getApps().length) {
   const privateKey = process.env.FIREBASE_PRIVATE_KEY;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
   const projectId = process.env.FIREBASE_PROJECT_ID;
 
   if (!privateKey || !clientEmail || !projectId) {
     console.error('Missing Firebase env vars:', {
-      hasPrivateKey: !!privateKey,
-      hasClientEmail: !!clientEmail,
-      hasProjectId: !!projectId,
+      projectId: !!projectId,
+      clientEmail: !!clientEmail,
+      privateKey: !!privateKey,
     });
   } else {
     try {
-      admin.initializeApp({
-        credential: admin.credential.cert({
+      initializeApp({
+        credential: cert({
           projectId,
           clientEmail,
           privateKey: privateKey.replace(/\\n/g, '\n'),
         }),
       });
+      console.log('Firebase Admin initialized');
     } catch (error) {
       console.error('Firebase Admin init error:', error);
     }
   }
 }
 
-const db = admin.apps?.length ? admin.firestore() : null;
+const db = getApps().length ? getFirestore() : null;
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -327,8 +329,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total_views: Math.max(totalViews, existing?.total_views || 0),
       total_likes: Math.max(totalLikes, existing?.total_likes || 0),
       total_posts: Math.max(userTweets.length, existing?.total_posts || 0),
-      last_indexed_at: admin.firestore.FieldValue.serverTimestamp(),
-      created_at: existing?.created_at || admin.firestore.FieldValue.serverTimestamp(),
+      last_indexed_at: FieldValue.serverTimestamp(),
+      created_at: existing?.created_at || FieldValue.serverTimestamp(),
     };
 
     await db.collection('indexed_users').doc(cleanHandle).set(finalUser, { merge: true });

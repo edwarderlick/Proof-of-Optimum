@@ -1,32 +1,35 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 
-if (!admin.apps?.length) {
+if (!getApps().length) {
   const privateKey = process.env.FIREBASE_PRIVATE_KEY;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
   const projectId = process.env.FIREBASE_PROJECT_ID;
 
   if (!privateKey || !clientEmail || !projectId) {
     console.error('Missing Firebase env vars:', {
-      hasPrivateKey: !!privateKey,
-      hasClientEmail: !!clientEmail,
-      hasProjectId: !!projectId,
+      projectId: !!projectId,
+      clientEmail: !!clientEmail,
+      privateKey: !!privateKey,
     });
   } else {
     try {
-      admin.initializeApp({
-        credential: admin.credential.cert({
+      initializeApp({
+        credential: cert({
           projectId,
           clientEmail,
           privateKey: privateKey.replace(/\\n/g, '\n'),
         }),
       });
+      console.log('Firebase Admin initialized');
     } catch (error) {
       console.error('Firebase Admin init error:', error);
     }
   }
 }
+
+const db = getApps().length ? getFirestore() : null;
 
 function parseTweetsFromResponse(data: any): any[] {
   const tweets: any[] = [];
@@ -127,7 +130,7 @@ const QUERIES = [
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Content-Type', 'application/json');
 
-  if (!admin.apps?.length) {
+  if (!db) {
     return res.status(500).json({
       error: 'Database not initialized — check FIREBASE_* env vars in Vercel dashboard',
       success: false,
@@ -189,8 +192,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       freshUserMap.set(tweet.user_id, prev);
     }
     console.log('Unique users this run:', freshUserMap.size);
-
-    const db = getFirestore();
 
     // FIX 3 + FIX 4: Read ALL existing indexed_users once
     const existingSnapshot = await db.collection('indexed_users').get();

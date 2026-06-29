@@ -1,25 +1,15 @@
-// @ts-nocheck
-import { createRequire } from 'module';
-import { VercelRequest, VercelResponse } from '@vercel/node';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import * as admin from 'firebase-admin';
 
-const require = createRequire(import.meta.url);
-const admin = require('firebase-admin');
+let db: FirebaseFirestore.Firestore | null = null;
 
-let db: any = null;
+if (!admin.apps.length) {
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const projectId = process.env.FIREBASE_PROJECT_ID;
 
-try {
-  if (!admin.apps || !admin.apps.length) {
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-
-    console.log('Firebase env check:', {
-      projectId: !!projectId,
-      clientEmail: !!clientEmail,
-      privateKey: !!privateKey,
-    });
-
-    if (privateKey && clientEmail && projectId) {
+  if (privateKey && clientEmail && projectId) {
+    try {
       admin.initializeApp({
         credential: admin.credential.cert({
           projectId,
@@ -27,15 +17,20 @@ try {
           privateKey: privateKey.replace(/\\n/g, '\n'),
         }),
       });
-      console.log('✅ Firebase Admin initialized');
-    } else {
-      console.error('❌ Missing Firebase env vars');
+      console.log('✅ Firebase initialized');
+      db = admin.firestore();
+    } catch (err) {
+      console.error('Firebase init error:', err);
     }
+  } else {
+    console.error('Missing Firebase env vars:', {
+      projectId: !!projectId,
+      clientEmail: !!clientEmail,
+      privateKey: !!privateKey,
+    });
   }
+} else {
   db = admin.firestore();
-  console.log('✅ Firestore connected');
-} catch (err) {
-  console.error('❌ Firebase init error:', String(err));
 }
 
 function parseTweetsFromResponse(data: any): any[] {
